@@ -269,6 +269,65 @@
           </div>
         </div>
 
+        <!-- 我的餐馆库 —— 增删查 -->
+        <div v-if="isLoggedIn" class="white-card restaurant-mgmt-card">
+          <h2 class="card-label">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ea580c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>
+            我的餐馆库
+            <span class="restaurant-count-badge" v-if="myRestaurantList.length">{{ myRestaurantList.length }} 家</span>
+          </h2>
+
+          <!-- 添加表单 -->
+          <div class="restaurant-form">
+            <input v-model="restaurantForm.name" type="text" placeholder="餐馆名称" class="rest-input" @keydown.enter="addRestaurant" />
+
+            <!-- 标签选择（可点击多选，和辣一样直观） -->
+            <div class="rest-tag-pick-row">
+              <span class="rest-tag-pick-label">标签：</span>
+              <button
+                v-for="tag in restaurantTagOptions"
+                :key="tag"
+                :class="['rest-tag-pick', { 'rest-tag-pick--active': selectedRestaurantTags.includes(tag) }]"
+                @click="toggleRestaurantTag(tag)"
+              >{{ tag }}</button>
+            </div>
+
+            <div class="rest-form-bottom">
+              <select v-model="restaurantForm.price_range" class="rest-select">
+                <option value="">价格区间（可选）</option>
+                <option value="人均30以下">人均 30 以下</option>
+                <option value="人均30-50">人均 30-50</option>
+                <option value="人均50-80">人均 50-80</option>
+                <option value="人均80-120">人均 80-120</option>
+                <option value="人均120以上">人均 120 以上</option>
+              </select>
+              <label class="rest-spicy-label">
+                <input type="checkbox" v-model="restaurantForm.is_spicy" /> 辣
+              </label>
+              <button class="btn-add-rest" :disabled="restaurantFormLoading" @click="addRestaurant">
+                {{ restaurantFormLoading ? '添加中…' : '＋ 添加' }}
+              </button>
+            </div>
+          </div>
+
+          <!-- 餐馆列表 -->
+          <div v-if="myRestaurantList.length === 0" class="rest-empty">
+            <p>还没有添加餐馆，快添上常去的店吧～</p>
+          </div>
+          <div v-else class="rest-list">
+            <div v-for="r in myRestaurantList" :key="r.id" class="rest-item">
+              <div class="rest-item-info">
+                <span class="rest-item-name">{{ r.name }}</span>
+                <span class="rest-item-tags">
+                  <span v-for="t in r.tags.split(',')" :key="t" class="rest-tag">{{ t }}</span>
+                </span>
+                <span class="rest-item-meta">{{ r.price_range || '价格不限' }} {{ r.is_spicy ? '· 🌶️辣' : '' }}</span>
+              </div>
+              <button class="btn-del-rest" @click="deleteRestaurant(r.id)" title="删除">✕</button>
+            </div>
+          </div>
+        </div>
+
         <div class="white-card blindbox-card">
           <!-- Filters -->
           <div class="blindbox-filters">
@@ -464,123 +523,325 @@
 </template>
 
 <!-- ================================================================ -->
+<!--
+  ╔══════════════════════════════════════════════════════════════════════╗
+  ║                    知味 (ZhiWei) — 全部前端逻辑                       ║
+  ╠══════════════════════════════════════════════════════════════════════╣
+  ║                                                                      ║
+  ║  关键数据流：                                                         ║
+  ║                                                                      ║
+  ║  登录 / 注册                                                          ║
+  ║    POST /api/auth/login  → { user_id, username, token }              ║
+  ║    POST /api/auth/register → { code, message }                       ║
+  ║    ↓                                                                 ║
+  ║    loggedInUserId  ← 存下真实的用户 ID（不再硬编码为 1！）             ║
+  ║    ↓                                                                 ║
+  ║  清空冰箱计划（食材反查菜谱）                                          ║
+  ║    GET /api/recipes/search?ingredients=土豆,牛肉&user_id=<loggedInUserId>║
+  ║    ↓                                                                 ║
+  ║    后端根据 user_id 做可见性过滤：                                     ║
+  ║    - 系统菜谱：所有人可见                                             ║
+  ║    - 私房菜谱：只有上传者可见（recipe.user_id == user_id）            ║
+  ║                                                                      ║
+  ║  上传私房菜谱                                                         ║
+  ║    POST /api/recipes/custom  { user_id, title, ingredients, steps }  ║
+  ║    ↓                                                                 ║
+  ║    菜谱记在 recipe 表（is_custom=True, user_id=loggedInUserId）       ║
+  ║                                                                      ║
+  ║  个人中心                                                             ║
+  ║    GET /api/recipes/mine?user_id=<loggedInUserId>                     ║
+  ║    ↓                                                                 ║
+  ║    返回该用户的所有私房菜谱                                           ║
+  ║                                                                      ║
+  ║  盲盒选餐馆                                                           ║
+  ║    POST /api/restaurants/blindbox  { user_id, exclude_spicy, ... }   ║
+  ║    ↓                                                                 ║
+  ║    只从该用户的餐馆库中抽取                                           ║
+  ║                                                                      ║
+  ╚══════════════════════════════════════════════════════════════════════╝
+-->
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, onUnmounted } from 'vue'
 import axios from 'axios'
 
-// Types
+// ─── TypeScript 类型定义 ─────────────────────────────────────────────
+// 菜谱对象（对应后端 /api/recipes/search 返回的每条记录）
 interface RecipeItem {
-  id: number; title: string; steps: string; is_custom: boolean
-  user_id: number | null; match_count: number; total_ingredients: number
-  ingredients: string[]
+  id: number                    // 菜谱 ID
+  title: string                 // 菜名，如 "西红柿炒鸡蛋"
+  steps: string                 // 烹饪步骤说明
+  is_custom: boolean            // true=私房菜谱, false=系统菜谱
+  user_id: number | null        // 上传者 ID（系统菜谱为 null）
+  match_count: number           // 命中了几个用户输入的食材
+  total_ingredients: number     // 这道菜一共需要几种食材
+  ingredients: string[]         // 食材名称列表
 }
+
+// 餐馆对象（对应后端 /api/restaurants/blindbox 的返回）
 interface RestaurantItem {
-  id: number; name: string; tags: string; is_spicy: boolean
-  price_range: string; weight: number; boosts: string[]
+  id: number                    // 餐馆 ID
+  name: string                  // 餐馆名称
+  tags: string                  // 标签，逗号分隔，如 "中餐,宵夜"
+  is_spicy: boolean             // 是否辣
+  price_range: string           // 价格区间，如 "人均50-80"
+  weight: number                // 抽选权重（算法计算）
+  boosts: string[]              // 加成原因，如 ["夜间推荐：宵夜"]
 }
 
-// ═══════════════ App State ═══════════════
-const scrolled = ref(false)
-const currentPage = ref('home')
-const showLogin = ref(false)
-const isLoggedIn = ref(false)
-const isLoginMode = ref(true)
-const loggedInUser = ref('美食家_007')
-const loginLoading = ref(false)
-const loginForm = reactive({ username: '', password: '' })
 
+// ══════════════════════════════════════════════════════════════════════
+//  全局状态（App State）
+// ══════════════════════════════════════════════════════════════════════
+
+const scrolled = ref(false)                         // 页面是否滚动了（控制 header 样式）
+const currentPage = ref('home')                     // 当前页面：home | fridge | blindbox | upload | user
+const showLogin = ref(false)                        // 是否弹出登录/注册弹窗
+
+// ── 🔑 登录状态（本次 bug 修复的核心区域） ──────────────────────────
+const isLoggedIn = ref(false)                       // 是否已登录
+const isLoginMode = ref(true)                       // true=登录模式, false=注册模式
+const loggedInUser = ref('美食家_007')               // 当前用户名（用于界面展示）
+const loggedInUserId = ref<number | null>(null)     // 🆕 当前用户的数据库 ID
+//                                                  //   修复前：所有请求硬编码 user_id=1
+//                                                  //   修复后：登录时从后端获取真实 ID
+const loginLoading = ref(false)                     // 登录/注册按钮 loading 状态
+const loginForm = reactive({ username: '', password: '' })  // 登录表单双向绑定
+
+
+// ── 页面滚动监听（控制 header 毛玻璃效果） ─────────────────────────
 const onScroll = () => { scrolled.value = window.scrollY > 20 }
 onMounted(() => window.addEventListener('scroll', onScroll))
 onUnmounted(() => window.removeEventListener('scroll', onScroll))
 
+// ── 页面导航 ───────────────────────────────────────────────────────
 function goHome() { currentPage.value = 'home' }
 function setPage(p: string) { currentPage.value = p; window.scrollTo(0, 0) }
+
+/**
+ * 权限门控：某些页面需要登录才能访问。
+ * 未登录时弹出登录弹窗，登录后才跳转。
+ */
 function handleAuthGate(page: string) {
   if (!isLoggedIn.value) { showLogin.value = true; return }
   setPage(page)
 }
 
+
+// ══════════════════════════════════════════════════════════════════════
+//  登录 / 注册
+// ══════════════════════════════════════════════════════════════════════
+
+/**
+ * 处理登录或注册。
+ *
+ * 🔑 关键改动（bug 修复）：
+ *   登录成功后，除了存 isLoggedIn 和 username 外，
+ *   还要存 loggedInUserId = data.user_id。
+ *   这个值会用于后续所有 API 请求，确保数据隔离正确。
+ *
+ *   注册成功后，切换到登录模式让用户重新登录。
+ */
 async function handleLogin() {
   if (!loginForm.username || !loginForm.password) return
   loginLoading.value = true
   try {
+    // 根据当前模式选择登录或注册接口
     const url = isLoginMode.value
-      ? 'http://127.0.0.1:5000/api/auth/login'
-      : 'http://127.0.0.1:5000/api/auth/register'
+      ? 'http://127.0.0.1:5000/api/auth/login'     // 登录
+      : 'http://127.0.0.1:5000/api/auth/register'   // 注册
     const { data } = await axios.post(url, loginForm)
+
     if (data.code === 200) {
+      // ── 登录 / 注册成功 ───────────────────────────────────────
       isLoggedIn.value = true
-      loggedInUser.value = loginForm.username
+      loggedInUser.value = loginForm.username          // 用户名 → 界面展示
+      loggedInUserId.value = data.user_id ?? 1         // 🆕 真实 DB 用户 ID
+      //                                              // ?? 1 是兜底：如果后端没返回 user_id
+      //                                              // （比如旧版本后端），fallback 到 1
       showLogin.value = false
       loginForm.username = ''; loginForm.password = ''
     } else {
-      alert(data.message)
+      alert(data.message)                               // 显示后端返回的错误信息
     }
-  } catch { alert('请求失败，请检查后端服务') }
+  } catch (error: any) {
+    // 区分：后端返回了 HTTP 错误（如 400） vs 网络错误（后端没启动）
+    if (error.response && error.response.data && error.response.data.message) {
+      alert(error.response.data.message)  // 显示后端真正返回的错误信息
+    } else {
+      alert('请求失败，请检查后端服务')
+    }
+  }
   finally { loginLoading.value = false }
 }
 
-// ═══════════════ Fridge / Search ═══════════════
-const fridgeInput = ref('')
-const fridgeIngredients = ref<string[]>([])
-const suggestions = ['洋葱', '大蒜', '青椒', '猪肉']
-const recipes = ref<RecipeItem[]>([])
-const searched = ref(false)
-const searchLoading = ref(false)
 
+// ══════════════════════════════════════════════════════════════════════
+//  清空冰箱计划 —— 食材反查菜谱
+// ══════════════════════════════════════════════════════════════════════
+
+const fridgeInput = ref('')                     // 食材输入框内容
+const fridgeIngredients = ref<string[]>([])     // 已添加的食材标签列表
+const suggestions = ['洋葱', '大蒜', '青椒', '猪肉']  // 快捷添加推荐
+const recipes = ref<RecipeItem[]>([])           // 搜索返回的菜谱列表
+const searched = ref(false)                     // 是否已经搜索过（控制空状态提示）
+const searchLoading = ref(false)                // 搜索 loading 状态
+
+/** 添加食材到冰箱列表（去重） */
 function addIngredient() {
   const v = fridgeInput.value.trim()
   if (v && !fridgeIngredients.value.includes(v)) fridgeIngredients.value.push(v)
   fridgeInput.value = ''
 }
+
+/** 从冰箱列表移除某个食材 */
 function removeIngredient(item: string) {
   fridgeIngredients.value = fridgeIngredients.value.filter(i => i !== item)
 }
+
+/** 快捷添加：点击推荐食材一键加入 */
 function quickAdd(item: string) {
   if (!fridgeIngredients.value.includes(item)) fridgeIngredients.value.push(item)
 }
 
+/**
+ * 🔍 执行菜谱搜索（清空冰箱计划核心函数）。
+ *
+ * 用户 ID 处理逻辑：
+ *   - 已登录：传 loggedInUserId（如 2、3、...）
+ *     → 后端返回：系统菜谱 + 我的私房菜谱
+ *   - 未登录：传 undefined（axios 会从 URL 中省略该参数）
+ *     → 后端返回：全部菜谱（游客模式）
+ *
+ * ⚠️ 修复前：这里硬编码 user_id=1，导致非 1 号用户搜不到自己的私房菜谱。
+ */
 async function fetchRecipes() {
-  const q = fridgeIngredients.value.join(',')
-  if (!q) return
+  const q = fridgeIngredients.value.join(',')   // 把食材标签拼成 "土豆,牛肉,青椒"
+  if (!q) return                                 // 没有食材就不搜
   searchLoading.value = true
   try {
     const { data } = await axios.get<{ code: number; data: RecipeItem[] }>(
       'http://127.0.0.1:5000/api/recipes/search',
-      { params: { ingredients: q, user_id: isLoggedIn.value ? 1 : undefined } },
+      {
+        params: {
+          ingredients: q,                                                     // 食材关键词
+          user_id: isLoggedIn.value ? loggedInUserId.value : undefined,      // 🆕 用真实 ID，不再硬编码 1
+        },
+      },
     )
-    if (data.code === 200) recipes.value = data.data
+    if (data.code === 200) recipes.value = data.data   // 把搜索结果赋给 recipes
     searched.value = true
   } catch { alert('搜索失败，请检查后端服务') }
   finally { searchLoading.value = false }
 }
 
-// ═══════════════ Blindbox ═══════════════
-const blindboxTags = ['今天不吃辣', '夜宵时段', '适合聚餐', '距离近', '随便对付']
-const activeTags = ref<string[]>([])
-const blindboxLoading = ref(false)
-const luckyRestaurant = ref<RestaurantItem | null>(null)
-const budget = ref('')
-const weather = ref('')
 
-function toggleTag(tag: string) {
-  const i = activeTags.value.indexOf(tag)
-  if (i >= 0) activeTags.value.splice(i, 1)
-  else activeTags.value.push(tag)
+// ══════════════════════════════════════════════════════════════════════
+//  命运转盘选餐厅 —— 盲盒抽取
+// ══════════════════════════════════════════════════════════════════════
+
+// 可选的餐馆标签（与权重算法联动：宵夜/烧烤→夜间加成，砂锅粥/火锅/养生→天气加成）
+const restaurantTagOptions = [
+  '中餐', '西餐', '日料', '韩餐', '粤菜', '川菜', '湘菜', '东北菜',
+  '火锅', '烧烤', '砂锅粥', '麻辣', '宵夜', '快餐', '养生', '高性价比', '适合聚餐', '面食',
+]
+
+// 场景标签 = 餐馆标签 + 特殊过滤项（同源同组，一一对应）
+const blindboxTags = [...restaurantTagOptions, '今天不吃辣']
+const activeTags = ref<string[]>([])             // 当前选中的场景标签
+const blindboxLoading = ref(false)               // 抽选 loading 状态
+const luckyRestaurant = ref<RestaurantItem | null>(null)  // 抽中的幸运餐馆
+const budget = ref('')                           // 预算范围：'' | 'low' | 'mid' | 'high'
+const weather = ref('')                          // 天气：'' | '雨天' | '寒冷'
+
+// ── 餐馆管理 ──────────────────────────────────────────────────────────
+const myRestaurantList = ref<any[]>([])                     // 当前用户的餐馆列表
+const restaurantForm = reactive({ name: '', is_spicy: false, price_range: '' })
+const restaurantFormLoading = ref(false)
+const selectedRestaurantTags = ref<string[]>([])
+
+/** 切换标签选中状态 */
+function toggleRestaurantTag(tag: string) {
+  const i = selectedRestaurantTags.value.indexOf(tag)
+  if (i >= 0) selectedRestaurantTags.value.splice(i, 1)
+  else selectedRestaurantTags.value.push(tag)
 }
 
+/** 加载当前用户的餐馆列表 */
+async function fetchRestaurants() {
+  if (!loggedInUserId.value) return
+  try {
+    const { data } = await axios.get<{ code: number; data: any[] }>(
+      'http://127.0.0.1:5000/api/restaurants',
+      { params: { user_id: loggedInUserId.value } },
+    )
+    if (data.code === 200) myRestaurantList.value = data.data
+  } catch { /* 静默 */ }
+}
+
+/** 新增一家餐馆 */
+async function addRestaurant() {
+  if (!restaurantForm.name) { alert('餐馆名称不能为空'); return }
+  if (selectedRestaurantTags.value.length === 0) { alert('请至少选择一个标签'); return }
+  restaurantFormLoading.value = true
+  try {
+    const { data } = await axios.post<{ code: number; message: string }>(
+      'http://127.0.0.1:5000/api/restaurants',
+      {
+        user_id: loggedInUserId.value,
+        ...restaurantForm,
+        tags: selectedRestaurantTags.value.join(','),
+      },
+    )
+    if (data.code === 201) {
+      restaurantForm.name = ''; restaurantForm.is_spicy = false; restaurantForm.price_range = ''
+      selectedRestaurantTags.value = []
+      fetchRestaurants()
+    } else { alert(data.message) }
+  } catch { alert('添加失败，请检查后端服务') }
+  finally { restaurantFormLoading.value = false }
+}
+
+/** 删除一家餐馆 */
+async function deleteRestaurant(id: number) {
+  if (!confirm('确定要删除这家餐馆吗？')) return
+  try {
+    await axios.delete(`http://127.0.0.1:5000/api/restaurants/${id}`, {
+      params: { user_id: loggedInUserId.value },
+    })
+    fetchRestaurants()  // 刷新列表
+  } catch { alert('删除失败') }
+}
+
+/** 切换场景标签的选中状态 */
+function toggleTag(tag: string) {
+  const i = activeTags.value.indexOf(tag)
+  if (i >= 0) activeTags.value.splice(i, 1)      // 已选中 → 取消
+  else activeTags.value.push(tag)                // 未选中 → 选中
+}
+
+/**
+ * 🎰 执行盲盒抽选。
+ *
+ * 从当前用户的餐馆库中，根据场景条件（不吃辣、天气、预算），
+ * 加权随机抽取一家餐馆。
+ *
+ * user_id 使用 loggedInUserId，只抽当前用户自己的餐馆。
+ */
 async function doBlindbox() {
   blindboxLoading.value = true
   luckyRestaurant.value = null
   try {
     const excludeSpicy = activeTags.value.includes('今天不吃辣')
+    // 筛选出真实的口味偏好标签（排除'今天不吃辣'这种特殊过滤项）
+    const preferredTags = activeTags.value.filter(t => restaurantTagOptions.includes(t))
     const { data } = await axios.post<{ code: number; data: RestaurantItem | null; message?: string }>(
       'http://127.0.0.1:5000/api/restaurants/blindbox',
       {
-        user_id: 1,
+        user_id: loggedInUserId.value,
         exclude_spicy: excludeSpicy,
         user_weather: weather.value || null,
         budget: budget.value || null,
+        preferred_tags: preferredTags.length > 0 ? preferredTags : null,
       },
     )
     if (data.code === 200 && data.data) {
@@ -590,11 +851,27 @@ async function doBlindbox() {
   finally { blindboxLoading.value = false }
 }
 
-// ═══════════════ Upload ═══════════════
+
+// ══════════════════════════════════════════════════════════════════════
+//  上传私房菜谱
+// ══════════════════════════════════════════════════════════════════════
+
 const uploadForm = reactive({ title: '', ingredients: '', steps: '' })
 const uploadLoading = ref(false)
 
+/**
+ * 📤 上传一条私房菜谱到后端。
+ *
+ * user_id 从 loggedInUserId 取（登录时从后端获取的真实 ID），
+ * 这样菜谱就和当前用户绑定，后续在「清空冰箱计划」中能被正确检索到。
+ *
+ * 后端会：
+ *   1. 在 recipe 表创建记录（is_custom=True）
+ *   2. 逐食材匹配已有记录或新建
+ *   3. 在 junction 表建立 recipe ↔ ingredient 映射
+ */
 async function doUpload() {
+  // ── 前端校验 ───────────────────────────────────────────────────
   if (!uploadForm.title || !uploadForm.ingredients || !uploadForm.steps) {
     alert('请填写完整信息'); return
   }
@@ -602,41 +879,73 @@ async function doUpload() {
   try {
     const { data } = await axios.post<{ code: number; message: string }>(
       'http://127.0.0.1:5000/api/recipes/custom',
-      { user_id: 1, ...uploadForm },
+      { user_id: loggedInUserId.value, ...uploadForm },  // 🆕 真实用户 ID + 表单数据
     )
     if (data.code === 201) {
       alert('私房菜谱上传成功！')
+      // 清空表单，方便继续上传下一道菜
       uploadForm.title = ''; uploadForm.ingredients = ''; uploadForm.steps = ''
     } else { alert(data.message) }
   } catch { alert('上传失败，请检查后端服务') }
   finally { uploadLoading.value = false }
 }
 
-// ═══════════════ User Center ═══════════════
-const userTab = ref('list')
-// Load user's custom recipes & restaurants
-const myRecipes = ref<RecipeItem[]>([])
-const myRestaurants = ref<RestaurantItem[]>([])
-const myRecipesCount = computed(() => myRecipes.value.length)
-const myRestaurantsCount = computed(() => myRestaurants.value.length)
 
+// ══════════════════════════════════════════════════════════════════════
+//  个人中心
+// ══════════════════════════════════════════════════════════════════════
+
+const userTab = ref('list')                     // 当前标签页：'list'（我的菜谱）| 'restaurants'（我的餐馆）
+const myRecipes = ref<RecipeItem[]>([])          // 我的私房菜谱列表
+const myRestaurants = ref<RestaurantItem[]>([])  // 我的餐馆列表
+const myRecipesCount = computed(() => myRecipes.value.length)          // 菜谱数量（计算属性）
+const myRestaurantsCount = computed(() => myRestaurants.value.length)  // 餐馆数量（计算属性）
+
+/**
+ * 📋 加载当前用户的私房菜谱列表（个人中心用）。
+ *
+ * 🆕 修复前：调用 /api/recipes/search?ingredients=&user_id=1
+ *   这个 hack 有两个问题：
+ *     1. ingredients 为空 → 后端返回 400 → 永远拿不到数据
+ *     2. user_id 硬编码为 1 → 多用户场景下数据错乱
+ *
+ * 🆕 修复后：调用专门的 /api/recipes/mine 端点
+ *   直接根据 user_id 返回该用户的私房菜谱，语义清晰且可靠。
+ */
 async function loadUserData() {
+  if (!loggedInUserId.value) return              // 未登录 → 跳过
   try {
-    // Search with user's custom recipes
-    const { data: rData } = await axios.get('http://127.0.0.1:5000/api/recipes/search', {
-      params: { ingredients: '', user_id: 1 },
-    }).catch(() => ({ data: { data: [] } }))
-    myRecipes.value = (rData.data || []).filter((r: RecipeItem) => r.is_custom)
-  } catch { /* ignore */ }
+    const { data: rData } = await axios.get<{ code: number; data: RecipeItem[] }>(
+      'http://127.0.0.1:5000/api/recipes/mine',   // 🆕 专用端点，不再 hack search 接口
+      { params: { user_id: loggedInUserId.value } },  // 🆕 真实用户 ID
+    )
+    if (rData.code === 200) myRecipes.value = rData.data
+  } catch { /* 静默忽略：网络异常时不影响其他功能 */ }
 }
 
-// Watch page changes to auto-search / load data
+
+// ══════════════════════════════════════════════════════════════════════
+//  响应式监听（Watchers）
+// ══════════════════════════════════════════════════════════════════════
+
 import { watch } from 'vue'
+
+/**
+ * 监听页面切换：
+ *   - 进入「个人中心」→ 自动加载用户数据
+ *   - 进入「清空冰箱」→ 如果已有食材则自动搜索
+ */
 watch(currentPage, (val) => {
   if (val === 'user' && isLoggedIn.value) loadUserData()
   if (val === 'fridge' && fridgeIngredients.value.length > 0) fetchRecipes()
+  if (val === 'blindbox' && isLoggedIn.value) fetchRestaurants()
 })
-// Auto-search when ingredients change
+
+/**
+ * 监听食材列表变化：
+ *   每当用户添加/删除食材，自动触发菜谱搜索（无需手动点搜索按钮）。
+ *   deep: true 确保数组元素变化也能被检测到。
+ */
 watch(fridgeIngredients, () => {
   if (fridgeIngredients.value.length > 0 && currentPage.value === 'fridge') {
     fetchRecipes()
@@ -838,6 +1147,39 @@ body{font-family:'Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif;backg
 .btn-draw--disabled{background:#d6d3d1;box-shadow:none;cursor:not-allowed}
 .btn-confirm{padding:16px 36px;border-radius:18px;font-size:17px;font-weight:700;color:#fff;border:none;cursor:pointer;background:#22c55e;box-shadow:0 10px 24px rgba(34,197,94,.25);transition:all .3s}
 .btn-confirm:hover{transform:translateY(-2px);background:#16a34a}
+
+/* ═══════════════ Restaurant Management ═══════════════ */
+.restaurant-mgmt-card{margin-bottom:28px}
+.restaurant-count-badge{font-size:12px;font-weight:400;color:#fff;background:#ea580c;padding:2px 10px;border-radius:999px;margin-left:8px}
+.restaurant-form{display:flex;flex-direction:column;gap:12px;margin-bottom:20px;padding-bottom:20px;border-bottom:1px solid #f5f5f4}
+.rest-input{padding:10px 14px;border:1px solid #e7e5e4;border-radius:12px;font-size:14px;color:#292524;outline:none;background:#fafaf9;transition:all .2s;width:100%}
+.rest-input:focus{border-color:#fdba74;box-shadow:0 0 0 3px rgba(251,146,60,.1)}
+/* 标签选择行 */
+.rest-tag-pick-row{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.rest-tag-pick-label{font-size:13px;color:#a8a29e;font-weight:600}
+.rest-tag-pick{padding:6px 14px;border-radius:10px;font-size:12px;font-weight:500;background:#fafaf9;color:#78716c;border:1px solid #e7e5e4;cursor:pointer;transition:all .2s}
+.rest-tag-pick:hover{background:#fff7ed;color:#ea580c;border-color:#fed7aa}
+.rest-tag-pick--active{background:#f97316;color:#fff;border-color:#f97316;box-shadow:0 2px 8px rgba(249,115,22,.25)}
+/* 表单底部行 */
+.rest-form-bottom{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.rest-select{padding:10px 14px;border:1px solid #e7e5e4;border-radius:12px;font-size:14px;background:#fafaf9;color:#78716c;outline:none;cursor:pointer;transition:all .2s}
+.rest-select:focus{border-color:#fdba74}
+.rest-spicy-label{display:flex;align-items:center;gap:4px;font-size:13px;color:#78716c;cursor:pointer;white-space:nowrap}
+.rest-spicy-label input{accent-color:#ef4444}
+.btn-add-rest{padding:10px 20px;border-radius:12px;font-size:14px;font-weight:600;color:#fff;border:none;cursor:pointer;background:#ea580c;box-shadow:0 4px 12px rgba(234,88,12,.2);transition:all .2s;white-space:nowrap}
+.btn-add-rest:hover:not(:disabled){background:#c2410c}
+.btn-add-rest:disabled{opacity:.6;cursor:not-allowed}
+.rest-empty{padding:20px 0;text-align:center;color:#a8a29e;font-size:14px}
+.rest-list{display:flex;flex-direction:column;gap:8px}
+.rest-item{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:#fafaf9;border-radius:14px;transition:all .2s}
+.rest-item:hover{background:#fff7ed}
+.rest-item-info{display:flex;align-items:center;gap:12px;flex-wrap:wrap;min-width:0}
+.rest-item-name{font-weight:700;color:#292524;font-size:15px}
+.rest-item-tags{display:flex;flex-wrap:wrap;gap:4px}
+.rest-tag{font-size:11px;background:#ffedd5;color:#c2410c;padding:2px 8px;border-radius:6px}
+.rest-item-meta{font-size:12px;color:#a8a29e}
+.btn-del-rest{width:28px;height:28px;border-radius:50%;border:1px solid #fecdd3;background:#fff;color:#f43f5e;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:12px;transition:all .2s;flex-shrink:0}
+.btn-del-rest:hover{background:#f43f5e;color:#fff;border-color:#f43f5e}
 
 /* ═══════════════ Upload ═══════════════ */
 .upload-label{display:block;font-size:14px;font-weight:700;color:#292524;margin-bottom:6px;margin-top:20px}
