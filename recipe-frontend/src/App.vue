@@ -148,8 +148,8 @@
             <div class="feat-icon feat-icon--blue">
               <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#2563eb" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
             </div>
-            <h3>个人中心与买菜清单</h3>
-            <p>一站式管理您的个人数据。保存收藏的餐馆、创建自动化的买菜清单，维护属于您的基础美食数据库。</p>
+            <h3>个人中心</h3>
+            <p>一站式管理您的个人数据。保存收藏的餐馆与私房菜谱，维护属于您的基础美食数据库。</p>
             <span class="feat-link feat-link--blue">进入个人中心 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg></span>
           </div>
         </div>
@@ -921,6 +921,15 @@ async function loadUserData() {
     )
     if (rData.code === 200) myRecipes.value = rData.data
   } catch { /* 静默忽略：网络异常时不影响其他功能 */ }
+
+  try {
+    // 加载收藏餐馆
+    const { data: restData } = await axios.get<{ code: number; data: RestaurantItem[] }>(
+      'http://127.0.0.1:5000/api/restaurants',
+      { params: { user_id: loggedInUserId.value } },
+    )
+    if (restData.code === 200) myRestaurants.value = restData.data
+  } catch { /* 静默忽略 */ }
 }
 
 
@@ -962,7 +971,42 @@ body{font-family:'Noto Sans SC','PingFang SC','Microsoft YaHei',sans-serif;backg
 </style>
 
 <style scoped>
+/*
+ * ╔══════════════════════════════════════════════════════════════════════════╗
+ * ║                     知味 (ZhiWei) — 样式架构说明                          ║
+ * ╠══════════════════════════════════════════════════════════════════════════╣
+ * ║                                                                          ║
+ * ║  设计系统                                                                 ║
+ * ║  ────────                                                                ║
+ * ║  品牌色：  橙色系 #f97316 / #ea580c（主色）                               ║
+ * ║           红色系 #ef4444（辅助渐变，用于 CTA 按钮）                        ║
+ * ║           绿色系 #22c55e（食材/清空冰箱 主题色）                           ║
+ * ║           蓝色系 #2563eb（个人中心 主题色）                                ║
+ * ║           粉色系 #f43f5e（私房菜谱 主题色）                                ║
+ * ║                                                                          ║
+ * ║  字重体系： 400(正文) / 500(标签) / 600(强文本) / 700(按钮) / 800-900(标题) ║
+ * ║  圆角体系： 12px(小) / 14-16px(中) / 18-24px(大) / 28-32px(卡片) / 999px(胶囊) ║
+ * ║  阴影体系： 轻量阴影(卡片悬停) / 中等阴影(按钮) / 强阴影(CTA/Hero)            ║
+ * ║                                                                          ║
+ * ║  布局策略                                                                 ║
+ * ║  ────────                                                                ║
+ * ║  - 全局使用 flexbox 布局（极少使用 grid）                                  ║
+ * ║  - 响应式：移动端优先，@media(min-width: 768px) 适配平板/桌面               ║
+ * ║  - 最大内容宽度：1200px（header/features）/ 1000px（子页面）                ║
+ * ║  - 全局背景 #FFFDF9（暖白）、卡片背景 #fff、输入框背景 #fafaf9              ║
+ * ║                                                                          ║
+ * ║  CSS 组织                                                                 ║
+ * ║  ────────                                                                ║
+ * ║  按页面/组件自上而下排列，每个区块用 ═══ 分隔符标注：                         ║
+ * ║    Root → Header → Login Modal → Hero → Features → Sub Pages             ║
+ * ║    → White Card → Fridge → Results → Blindbox → Restaurant Mgmt           ║
+ * ║    → Upload → User Center → Footer                                        ║
+ * ║                                                                          ║
+ * ╚══════════════════════════════════════════════════════════════════════════╝
+ */
+
 /* ═══════════════ Root ═══════════════ */
+/* 应用根容器：最小全屏高度，flex 列布局（header + 内容 + footer） */
 .app-root{min-height:100vh;display:flex;flex-direction:column}
 
 /* ═══════════════ Header ═══════════════ */
